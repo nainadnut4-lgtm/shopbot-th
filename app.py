@@ -31,7 +31,7 @@ handler     = WebhookHandler(CHANNEL_SECRET)
 line_config = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
-GEMINI_MODEL  = "gemini-1.5-flash"
+GEMINI_MODEL  = "gemini-2.0-flash-lite"
 SYSTEM_PROMPT = (
     "คุณเป็น AI chatbot ผู้ช่วยสำหรับร้านค้าออนไลน์ไทย "
     "ตอบภาษาไทยเป็นหลัก สุภาพ กระชับ และเป็นมิตร "
