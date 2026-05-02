@@ -1,5 +1,6 @@
 import os
 import logging
+import requests
 from flask import Flask, request, abort, jsonify
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -9,10 +10,8 @@ from linebot.v3.messaging import (
 )
 from linebot.v3.webhooks import (
     MessageEvent, TextMessageContent,
-    FollowEvent, UnfollowEvent, PostbackEvent,
+    FollowEvent, UnfollowEvent,
 )
-from google import genai
-from google.genai import types as genai_types
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -21,17 +20,15 @@ app = Flask(__name__)
 
 CHANNEL_SECRET       = os.environ.get("LINE_CHANNEL_SECRET")
 CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
-GEMINI_API_KEY       = os.environ.get("GEMINI_API_KEY")
+GROQ_API_KEY         = os.environ.get("GROQ_API_KEY")
 
 if not CHANNEL_SECRET:       raise RuntimeError("LINE_CHANNEL_SECRET is not set")
 if not CHANNEL_ACCESS_TOKEN: raise RuntimeError("LINE_CHANNEL_ACCESS_TOKEN is not set")
-if not GEMINI_API_KEY:       raise RuntimeError("GEMINI_API_KEY is not set")
+if not GROQ_API_KEY:         raise RuntimeError("GROQ_API_KEY is not set")
 
 handler     = WebhookHandler(CHANNEL_SECRET)
 line_config = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
-gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
-GEMINI_MODEL  = "gemini-2.0-flash-lite"
 SYSTEM_PROMPT = (
     "คุณเป็น AI chatbot ผู้ช่วยสำหรับร้านค้าออนไลน์ไทย "
     "ตอบภาษาไทยเป็นหลัก สุภาพ กระชับ และเป็นมิตร "
@@ -41,30 +38,26 @@ SYSTEM_PROMPT = (
 conversation_history: dict[str, list[dict]] = {}
 MAX_HISTORY = 10
 
-def get_gemini_reply(user_id: str, user_text: str) -> str:
+def get_ai_reply(user_id: str, user_text: str) -> str:
     if user_id not in conversation_history:
         conversation_history[user_id] = []
-    conversation_history[user_id].append(
-        {"role": "user", "parts": [{"text": user_text}]}
-    )
+    conversation_history[user_id].append({"role": "user", "content": user_text})
     if len(conversation_history[user_id]) > MAX_HISTORY * 2:
         conversation_history[user_id] = conversation_history[user_id][-MAX_HISTORY * 2:]
     try:
-        response = gemini_client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=conversation_history[user_id],
-            config=genai_types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
-                max_output_tokens=1000,
-            ),
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}] + conversation_history[user_id]
+        resp = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+            json={"model": "llama-3.1-8b-instant", "messages": messages, "max_tokens": 1000},
+            timeout=30,
         )
-        reply_text = response.text or "ขออภัย ไม่สามารถตอบได้ในขณะนี้"
-        conversation_history[user_id].append(
-            {"role": "model", "parts": [{"text": reply_text}]}
-        )
+        data = resp.json()
+        reply_text = data["choices"][0]["message"]["content"]
+        conversation_history[user_id].append({"role": "assistant", "content": reply_text})
         return reply_text
     except Exception as e:
-        logger.error("Gemini error: %s", e)
+        logger.error("AI error: %s", e)
         conversation_history[user_id].pop()
         return "ขออภัย เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้งครับ"
 
@@ -81,11 +74,11 @@ def webhook():
         abort(400)
     return "OK", 200
 
-@app.route("/health", methods=["GET"])
+@app.route("/health")
 def health():
     return jsonify({"status": "ok"}), 200
 
-@app.route("/", methods=["GET"])
+@app.route("/")
 def index():
     return jsonify({"service": "ShopBotTH", "status": "running"}), 200
 
@@ -97,7 +90,7 @@ def handle_text(event):
         conversation_history.pop(user_id, None)
         reply = "รีเซ็ตแล้วครับ เริ่มใหม่ได้เลย! 🔄"
     else:
-        reply = get_gemini_reply(user_id, text)
+        reply = get_ai_reply(user_id, text)
     get_messaging_api().reply_message(
         ReplyMessageRequest(reply_token=event.reply_token,
                             messages=[TextMessage(text=reply)])
